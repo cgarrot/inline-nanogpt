@@ -236,10 +236,12 @@ class NanoGPTImageNode(NodeRunner):
         seed = int(params.get("seed", -1))
         if seed >= 0:
             payload["seed"] = seed
-        image_ref = _first(inputs.get("image"))
-        if image_ref is not None:
+        image_refs = list(inputs.get("image") or [])
+        if image_refs:
+            # ALL wired references ride along — a fusion node may take four study sheets.
             payload["input_references"] = [
-                {"type": "image_url", "image_url": {"url": _image_to_data_url(image_ref)}}
+                {"type": "image_url", "image_url": {"url": _image_to_data_url(ref)}}
+                for ref in image_refs[:8]
             ]
         _merge_extra(payload, str(params.get("extra_json", "")))
 
