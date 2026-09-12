@@ -202,7 +202,9 @@ def _audio_key(model_id: str) -> str:
     output_kind=MediaKind.IMAGE,
     inputs=(
         Port("prompt", "Prompt", PortKind.TEXT, required=True),
-        Port("image", "Reference image", PortKind.IMAGE, required=False),
+        # IMAGE_LIST: several references may be wired (fusion pipelines) — a plain IMAGE port
+        # keeps only the last wire at run time (graph_build), which starves multi-reference models.
+        Port("image", "Reference image(s)", PortKind.IMAGE_LIST, required=False),
     ),
     outputs=(Port("image", "Image", PortKind.IMAGE),),
     params=(
