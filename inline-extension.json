@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "id": "nanogpt",
+  "name": "NanoGPT",
+  "version": "0.4.0",
+  "description": "Hosted NanoGPT models (nano-gpt.com): image, text, video and audio generation nodes. Uses the NanoGPT API key (env NANOGPT_API_KEY, ~/.config/nano-gpt/api_key, or the key file in the extension data dir).",
+  "author": "cgarrot",
+  "homepage": "https://nano-gpt.com",
+  "license": "MIT",
+  "coreCompat": ">=1.2,<2.0",
+  "pythonRequires": ">=3.11",
+  "isolation": "shared",
+  "requirements": [],
+  "entry": "inline_ext_nanogpt:register",
+  "nodes": [
+    { "type": "nanogpt/image" },
+    { "type": "nanogpt/text" },
+    { "type": "nanogpt/video" },
+    { "type": "nanogpt/audio" }
+  ]
+}
