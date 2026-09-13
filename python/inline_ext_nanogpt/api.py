@@ -174,25 +174,33 @@ def poll_job(
 
 
 def job_assets(final: dict[str, Any]) -> list[tuple[str, str]]:
-    """(url, extension) pairs out of a completed job payload, covering the known response shapes."""
-    urls: list[tuple[str, str]] = []
-    for key in ("output", "assets", "results", "videos", "images", "files", "artifacts"):
-        value = final.get(key)
-        if isinstance(value, str) and value.startswith("http"):
-            urls.append((value, ""))
-        elif isinstance(value, dict):
-            url = value.get("url") or value.get("video_url") or value.get("image_url")
-            if isinstance(url, str) and url.startswith("http"):
-                urls.append((url, str(value.get("format") or value.get("type") or "")))
-        elif isinstance(value, list):
-            for item in value:
-                if isinstance(item, str) and item.startswith("http"):
-                    urls.append((item, ""))
-                elif isinstance(item, dict):
-                    url = item.get("url") or item.get("video_url") or item.get("image_url")
-                    if isinstance(url, str) and url.startswith("http"):
-                        urls.append((url, str(item.get("format") or item.get("type") or "")))
-    return urls
+    """(url, extension) pairs out of a completed job payload.
+
+    Response shapes vary per model (output.video.url, videoUrls[], url, assets[].url, ...),
+    so walk the whole payload for http links and rank media extensions first — cheaper and
+    more robust than enumerating key shapes (a nested output.video.url once yielded
+    "Completed job without a file").
+    """
+    found: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, str):
+            if node.startswith(("http://", "https://")) and node not in found:
+                found.append(node)
+        elif isinstance(node, dict):
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(final)
+    media_exts = (".mp4", ".webm", ".mov", ".gif", ".glb", ".gltf", ".png", ".jpg", ".jpeg", ".webp")
+    ranked = sorted(
+        found,
+        key=lambda u: 0 if u.split("?")[0].lower().endswith(media_exts) else 1,
+    )
+    return [(url, "") for url in ranked[:4]]
 
 
 def balance() -> str:
