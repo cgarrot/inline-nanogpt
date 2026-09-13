@@ -239,6 +239,13 @@ class NanoGPTImageNode(NodeRunner):
         if seed >= 0:
             payload["seed"] = seed
         image_refs = list(inputs.get("image") or [])
+        # TEMP-DEBUG: trace what the executor actually hands the node (fusion-0-images bug).
+        import sys as _sys
+        print(
+            f"[nanogpt/image] model={payload.get('model')!r} prompt={'oui' if prompt else 'NON'} "
+            f"image_refs={len(image_refs)} types={[type(r).__name__ for r in image_refs]}",
+            file=_sys.stderr, flush=True,
+        )
         if image_refs:
             # ALL wired references ride along — a fusion node may take four study sheets.
             payload["input_references"] = [
