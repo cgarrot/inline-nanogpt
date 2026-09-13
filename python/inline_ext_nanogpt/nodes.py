@@ -239,18 +239,15 @@ class NanoGPTImageNode(NodeRunner):
         if seed >= 0:
             payload["seed"] = seed
         image_refs = list(inputs.get("image") or [])
-        # TEMP-DEBUG: trace what the executor actually hands the node (fusion-0-images bug).
-        import sys as _sys
-        print(
-            f"[nanogpt/image] model={payload.get('model')!r} prompt={'oui' if prompt else 'NON'} "
-            f"image_refs={len(image_refs)} types={[type(r).__name__ for r in image_refs]}",
-            file=_sys.stderr, flush=True,
-        )
         if image_refs:
             # ALL wired references ride along — a fusion node may take four study sheets.
+            # Two wire formats, because models differ: `image` (OpenAI gpt-image style —
+            # flare/edit counts references there and 400s without them) and
+            # `input_references` (the shape other models accept). Unknown keys are ignored.
+            urls = [_image_to_data_url(ref) for ref in image_refs[:8]]
+            payload["image"] = urls
             payload["input_references"] = [
-                {"type": "image_url", "image_url": {"url": _image_to_data_url(ref)}}
-                for ref in image_refs[:8]
+                {"type": "image_url", "image_url": {"url": url}} for url in urls
             ]
         _merge_extra(payload, str(params.get("extra_json", "")))
 
