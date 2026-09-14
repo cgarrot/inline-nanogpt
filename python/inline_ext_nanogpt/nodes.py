@@ -224,6 +224,7 @@ def _image_to_data_url(ref: Any, remaining_budget: int = 0) -> str:
 def _jpeg_under_budget_capped(image: Any, budget: int) -> bytes:
     """Same shrinking loop as _jpeg_under_budget but with an explicit byte cap."""
     import io as _io
+    from PIL import Image
 
     side = MAX_SIDE
     for _ in range(5):
