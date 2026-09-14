@@ -204,6 +204,17 @@ def _safe_params(params: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in params.items() if isinstance(v, (str, int, float, bool))}
 
 
+def _video_model_entry(model_id: str) -> dict[str, Any]:
+    """The video model's catalog entry (schema + capabilities), best-effort."""
+    try:
+        for entry in api.load_catalog("video"):
+            if str(entry.get("id")) == model_id:
+                return entry
+    except Exception:  # noqa: BLE001 - catalog best-effort
+        pass
+    return {}
+
+
 def _audio_key(model_id: str) -> str:
     """'generate_audio' ou 'generateAudio', selon le schéma détaillé du modèle."""
     try:
@@ -459,6 +470,15 @@ class NanoGPTVideoNode(NodeRunner):
             # Le nom du param depend du modele (generateAudio vs generate_audio) : le schéma
             # détaillé du catalogue tranche, sinon orthographe majoritaire.
             payload[_audio_key(str(payload["model"]))] = True
+        else:
+            # Trap: seedance-2.5 defaults generate_audio to TRUE server-side, so silence
+            # means audio ON (billed, unwanted voice). Send the explicit off when the
+            # model's own default is on.
+            entry = _video_model_entry(str(payload["model"]))
+            schema = ((entry.get("supported_parameters") or {}).get("parameters")) or {}
+            audio_param = schema.get("generate_audio") or schema.get("generateAudio")
+            if isinstance(audio_param, dict) and audio_param.get("default") is True:
+                payload[_audio_key(str(payload["model"]))] = False
         if params.get("prompt_expansion"):
             payload["enable_prompt_expansion"] = True
         if params.get("web_search"):
@@ -474,6 +494,21 @@ class NanoGPTVideoNode(NodeRunner):
             if value:
                 payload[key] = value
         if wired_refs:
+            # Capability gate: the public catalog does not expose supports_reference_to_video,
+            # but the model's own schema does — a model that declares no reference_images
+            # param (seedance-2.5) will not consume them. Say it clearly instead of a silent
+            # degradation.
+            entry = _video_model_entry(str(payload["model"]))
+            schema_params = ((entry.get("supported_parameters") or {}).get("parameters")) or {}
+            caps = entry.get("capabilities") or {}
+            if caps.get("supports_reference_to_video") is False or (
+                schema_params and "reference_images" not in schema_params
+            ):
+                raise api.NanoGPTError(
+                    f"{payload['model']} ne supporte pas les références image "
+                    "(pas de paramètre reference_images). Câble plutôt l'image de départ "
+                    "(port image) ou choisis un modèle à références (minimax-h3…)."
+                )
             # Same dual-format as the image node: the array field takes data URLs (the
             # site itself posts base64 there), the text fields stay URL-only.
             data_urls = [_image_to_data_url(ref) for ref in wired_refs[:8]]
