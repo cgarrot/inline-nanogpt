@@ -556,20 +556,16 @@ class NanoGPTVideoNode(NodeRunner):
             if value:
                 payload[key] = value
         if wired_refs:
-            # Capability gate: the public catalog does not expose supports_reference_to_video,
-            # but the model's own schema does — a model that declares no reference_images
-            # param (seedance-2.5) will not consume them. Say it clearly instead of a silent
-            # degradation.
+            # The public catalog often omits reference_images from the schema even when the
+            # model accepts referenceImages (seedance-2.5's own mode is "Text / references to
+            # video"). Only block on an EXPLICIT supports_reference_to_video=false capability —
+            # never on a missing schema param, which was over-aggressive and blocked valid use.
             entry = _video_model_entry(str(payload["model"]))
-            schema_params = ((entry.get("supported_parameters") or {}).get("parameters")) or {}
             caps = entry.get("capabilities") or {}
-            if caps.get("supports_reference_to_video") is False or (
-                schema_params and "reference_images" not in schema_params
-            ):
+            if caps.get("supports_reference_to_video") is False:
                 raise api.NanoGPTError(
-                    f"{payload['model']} ne supporte pas les références image "
-                    "(pas de paramètre reference_images). Câble plutôt l'image de départ "
-                    "(port image) ou choisis un modèle à références (minimax-h3…)."
+                    f"{payload['model']} déclare explicitement supports_reference_to_video=false. "
+                    "Câble plutôt l'image de départ (port image) ou choisis un modèle à références."
                 )
             # Same dual-format as the image node: the array field takes data URLs (the
             # site itself posts base64 there), the text fields stay URL-only.
