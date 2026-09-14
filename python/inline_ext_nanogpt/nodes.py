@@ -34,6 +34,25 @@ def _options(*values: str) -> tuple[Option, ...]:
 NODE_CATALOGS: dict[type, str] = {}  # filled by apply_catalogs() at register time
 
 
+def _catalog_durations(min_models: int = 2, cap: int = 30) -> tuple[str, ...]:
+    """Duration union from the video catalog schemas (103 models have narrow ranges —
+    the union keeps the dropdown honest while run-time validation catches the rest)."""
+    from collections import Counter
+
+    counts: Counter[str] = Counter()
+    try:
+        for entry in api.load_catalog("video"):
+            for opt in (((entry.get("supported_parameters") or {}).get("parameters") or {})
+                        .get("duration", {}) or {}).get("options") or []:
+                value = opt.get("value")
+                if value is not None:
+                    counts[str(value)] += 1
+    except Exception:  # noqa: BLE001
+        pass
+    kept = [v for v, c in counts.most_common() if c >= min_models][:cap]
+    return tuple(["auto"] + sorted(kept, key=lambda x: (0 if x == "auto" else int(x) if x.isdigit() else 999)))
+
+
 def _catalog_resolutions(kind: str, min_models: int = 2, cap: int = 40) -> tuple[str, ...]:
     """Union of the per-model resolution lists (image models declare them in
     supported_parameters.resolutions — px AND ratio values coexist there), kept to the
@@ -43,7 +62,14 @@ def _catalog_resolutions(kind: str, min_models: int = 2, cap: int = 40) -> tuple
     counts: Counter[str] = Counter()
     try:
         for entry in api.load_catalog(kind):
-            for value in (entry.get("supported_parameters") or {}).get("resolutions") or []:
+            sp = entry.get("supported_parameters") or {}
+            # image: flat resolutions list; video: parameters.resolution.options
+            values = list(sp.get("resolutions") or [])
+            values += [
+                opt.get("value")
+                for opt in (((sp.get("parameters") or {}).get("resolution") or {}).get("options") or [])
+            ]
+            for value in values:
                 if isinstance(value, str) and value.strip():
                     counts[value.strip()] += 1
     except Exception:  # noqa: BLE001 - catalog best-effort
@@ -79,6 +105,17 @@ def apply_catalogs() -> None:
             params = [
                 _replace(field, options=_options(*_catalog_resolutions("image")))
                 if field.key == "resolution"
+                else field
+                for field in descriptor.params
+            ]
+            descriptor = _replace(descriptor, params=tuple(params))
+        if cls is NanoGPTVideoNode:
+            # Duration/resolution unions from the video catalog, frequency-filtered.
+            params = [
+                _replace(field, options=_options(*_catalog_resolutions("video")))
+                if field.key == "resolution"
+                else _replace(field, options=_options(*_catalog_durations()))
+                if field.key == "duration"
                 else field
                 for field in descriptor.params
             ]
@@ -204,10 +241,32 @@ def _safe_params(params: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in params.items() if isinstance(v, (str, int, float, bool))}
 
 
-def _video_model_entry(model_id: str) -> dict[str, Any]:
-    """The video model's catalog entry (schema + capabilities), best-effort."""
+def _schema_options(entry: dict[str, Any], param: str) -> set[str] | None:
+    """The model's declared values for a select param, or None when unconstrained."""
+    spec = ((entry.get("supported_parameters") or {}).get("parameters") or {}).get(param)
+    if not isinstance(spec, dict):
+        return None
+    return {str(o.get("value")) for o in (spec.get("options") or []) if o.get("value") is not None}
+
+
+def _validate_select(payload: dict[str, Any], entry: dict[str, Any], param: str) -> None:
+    """Drop-or-error a select value the model does not list: a clear message beats an API 400
+    (103 models have duration ranges narrower than our union dropdown)."""
+    value = payload.get(param)
+    if value in (None, "", "auto"):
+        return
+    allowed = _schema_options(entry, param)
+    if allowed and str(value) not in allowed:
+        raise api.NanoGPTError(
+            f"{payload.get('model')} n'accepte pas {param}={value!r}. "
+            f"Valeurs permises : {sorted(allowed)[:8]}."
+        )
+
+
+def _video_model_entry(model_id: str, kind: str = "video") -> dict[str, Any]:
+    """A model's catalog entry (schema + capabilities) from any modality, best-effort."""
     try:
-        for entry in api.load_catalog("video"):
+        for entry in api.load_catalog(kind):
             if str(entry.get("id")) == model_id:
                 return entry
     except Exception:  # noqa: BLE001 - catalog best-effort
@@ -289,6 +348,9 @@ class NanoGPTImageNode(NodeRunner):
             ]
         _merge_extra(payload, str(params.get("extra_json", "")))
 
+        _img_entry = _video_model_entry(str(payload["model"]), kind="image")
+        for _param in ("resolution", "aspect_ratio", "quality"):
+            _validate_select(payload, _img_entry, _param)
         data = api.post_json("/v1/images", payload, timeout=900)
         items = (data or {}).get("data") or []
         if not items:
@@ -541,6 +603,11 @@ class NanoGPTVideoNode(NodeRunner):
         safety = str(params.get("safety_checker") or "auto")
         if safety != "auto":
             payload["enable_safety_checker"] = safety == "on"
+        # Per-model contract: our union dropdowns are wider than many schemas — validate
+        # before sending so the error names the allowed values instead of an API 400.
+        _model_entry = _video_model_entry(str(payload["model"]))
+        for _param in ("resolution", "duration", "aspect_ratio", "mode", "orientation", "shot_type", "fps", "style"):
+            _validate_select(payload, _model_entry, _param)
         if image_ref is not None:
             payload["imageDataUrl"] = _image_to_data_url(image_ref)
         last_ref = _first(inputs.get("last_image"))
