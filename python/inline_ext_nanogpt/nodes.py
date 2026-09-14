@@ -368,7 +368,7 @@ class NanoGPTTextNode(NodeRunner):
         ParamField("seed", "Seed", Widget.SEED, -1),
         # Communs aux catalogues : generateAudio (23 modeles), enable_prompt_expansion (19),
         # enable_web_search (13). Envoyes seulement actives ; le reste via Extra JSON.
-        ParamField("generate_audio", "Audio soundtrack", Widget.BOOLEAN, False),
+        ParamField("generate_audio", "Audio soundtrack (⚠ coût — OFF si sound design en post)", Widget.BOOLEAN, False),
         ParamField("prompt_expansion", "Prompt expansion", Widget.BOOLEAN, False),
         # Parametres specifiques (spec /generate-video) : envoyes seulement s'ils sont remplis.
         ParamField("mode", "Mode", Widget.SELECT, "auto", options=_options(*VIDEO_MODES), advanced=True),
