@@ -34,6 +34,24 @@ def _options(*values: str) -> tuple[Option, ...]:
 NODE_CATALOGS: dict[type, str] = {}  # filled by apply_catalogs() at register time
 
 
+def _catalog_resolutions(kind: str, min_models: int = 2, cap: int = 40) -> tuple[str, ...]:
+    """Union of the per-model resolution lists (image models declare them in
+    supported_parameters.resolutions — px AND ratio values coexist there), kept to the
+    values several models share so the dropdown stays scannable (191 raw values otherwise)."""
+    from collections import Counter
+
+    counts: Counter[str] = Counter()
+    try:
+        for entry in api.load_catalog(kind):
+            for value in (entry.get("supported_parameters") or {}).get("resolutions") or []:
+                if isinstance(value, str) and value.strip():
+                    counts[value.strip()] += 1
+    except Exception:  # noqa: BLE001 - catalog best-effort
+        pass
+    kept = [v for v, c in counts.most_common() if c >= min_models][:cap]
+    return tuple(["auto"] + sorted(kept))
+
+
 def _model_id(params: dict[str, Any], fallback: str) -> str:
     """custom_model wins over the dropdown pick (an id the list may not carry)."""
     return str(params.get("custom_model", "")).strip() or str(params.get("model", "")).strip() or fallback
@@ -56,6 +74,15 @@ def apply_catalogs() -> None:
             continue
         ids = api.model_ids(kind)
         params = []
+        if cls is NanoGPTImageNode:
+            # Resolution options follow the catalog union (per-model lists mix px and ratios).
+            params = [
+                _replace(field, options=_options(*_catalog_resolutions("image")))
+                if field.key == "resolution"
+                else field
+                for field in descriptor.params
+            ]
+            descriptor = _replace(descriptor, params=tuple(params))
         for field in descriptor.params:
             if field.key == "model":
                 default = field.default if field.default in ids else (ids[0] if ids else field.default)
@@ -384,6 +411,17 @@ class NanoGPTTextNode(NodeRunner):
         ParamField("lora_scale_3", "LoRA 3 strength", Widget.NUMBER, 1.0, min=0.0, max=2.0, step=0.1, advanced=True),
         ParamField("show_explicit", "Allow explicit content", Widget.BOOLEAN, False, advanced=True),
         ParamField("web_search", "Web search", Widget.BOOLEAN, False, advanced=True),
+        # Couverture des schémas par modèle (review 2026-09-14) : envoyés seulement s'ils sont
+        # définis — un modèle qui ne connaît pas une clé l'ignore sans erreur.
+        ParamField("orientation", "Orientation", Widget.SELECT, "auto", options=_options("auto", "landscape", "portrait"), advanced=True),
+        ParamField("shot_type", "Shot type", Widget.SELECT, "auto", options=_options("auto", "single", "multi"), advanced=True),
+        ParamField("fps", "FPS", Widget.SELECT, "auto", options=_options("auto", "original", "source", "15", "24", "25", "30", "48", "50"), advanced=True),
+        ParamField("style", "Style", Widget.SELECT, "auto", options=_options("auto", "common", "general", "ugc", "anime", "3d_animation", "short_series", "aigc", "old_film"), advanced=True),
+        ParamField("camera_fixed", "Camera fixed (no motion)", Widget.BOOLEAN, False, advanced=True),
+        ParamField("cfg_scale", "CFG scale", Widget.NUMBER, 0.0, min=0.0, max=20.0, step=0.5, advanced=True),
+        ParamField("save_audio", "Save audio separately", Widget.BOOLEAN, False, advanced=True),
+        ParamField("keep_original_sound", "Keep original sound", Widget.BOOLEAN, False, advanced=True),
+        ParamField("safety_checker", "Safety checker", Widget.SELECT, "auto", options=_options("auto", "on", "off"), advanced=True),
         ParamField("extra_json", "Model-specific params (JSON)", Widget.TEXTAREA, "", advanced=True),
     ),
 )
@@ -438,6 +476,22 @@ class NanoGPTVideoNode(NodeRunner):
                 payload[f"lora_scale_{index}"] = float(params.get(f"lora_scale_{index}", 1.0))
         if params.get("show_explicit"):
             payload["showExplicitContent"] = True
+        for key in ("orientation", "shot_type", "fps", "style"):
+            value = params.get(key)
+            if value and value not in ("auto", ""):
+                payload[key] = value
+        if params.get("camera_fixed"):
+            payload["camera_fixed"] = True
+        cfg = float(params.get("cfg_scale") or 0)
+        if cfg > 0:
+            payload["cfg_scale"] = cfg
+        if params.get("save_audio"):
+            payload["save_audio"] = True
+        if params.get("keep_original_sound"):
+            payload["keep_original_sound"] = True
+        safety = str(params.get("safety_checker") or "auto")
+        if safety != "auto":
+            payload["enable_safety_checker"] = safety == "on"
         if image_ref is not None:
             payload["imageDataUrl"] = _image_to_data_url(image_ref)
         last_ref = _first(inputs.get("last_image"))
@@ -477,6 +531,7 @@ class NanoGPTVideoNode(NodeRunner):
         ParamField("speed", "Speed", Widget.NUMBER, 1.0, min=0.25, max=4.0, step=0.05),
         ParamField("instructions", "Style instructions", Widget.TEXTAREA, ""),
         ParamField("response_format", "Format", Widget.SELECT, "mp3", options=_options(*AUDIO_FORMATS)),
+        ParamField("duration", "Duration (s)", Widget.NUMBER, 0, min=0, max=600, step=1, advanced=True),
         ParamField("extra_json", "Extra JSON", Widget.TEXTAREA, "", advanced=True),
     ),
 )
@@ -503,6 +558,27 @@ class NanoGPTAudioNode(NodeRunner):
             payload["instructions"] = instructions
         _merge_extra(payload, str(params.get("extra_json", "")))
 
+        # Per-model contract: clamp duration to the declared range, keep only a response
+        # format the model actually lists (audio schemas declare voices/formats/ranges).
+        try:
+            for entry in api.load_catalog("audio"):
+                if str(entry.get("id")) == str(payload["model"]):
+                    sp = entry.get("supported_parameters") or {}
+                    if params.get("duration") and float(params["duration"]) > 0:
+                        lo = sp.get("min_duration")
+                        hi = sp.get("max_duration")
+                        duration = float(params["duration"])
+                        if lo is not None:
+                            duration = max(duration, float(lo))
+                        if hi is not None:
+                            duration = min(duration, float(hi))
+                        payload["duration"] = duration
+                    formats = sp.get("response_formats") or []
+                    if formats and payload.get("response_format") not in formats:
+                        payload["response_format"] = formats[0]
+                    break
+        except Exception:  # noqa: BLE001 - schema best-effort
+            pass
         raw = api.post_raw("/v1/audio/speech", payload, timeout=900)
         if not raw:
             raise api.NanoGPTError("Empty response from /v1/audio/speech.")
