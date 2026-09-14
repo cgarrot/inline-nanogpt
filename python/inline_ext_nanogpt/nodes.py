@@ -176,6 +176,9 @@ def _merge_extra(payload: dict[str, Any], extra_json: str) -> None:
 #: as JPEG before being embedded - a 1536px q88 JPEG lands around 300-600 KB.
 MAX_SIDE = int(os.environ.get("NANOGPT_IMAGE_MAX_SIDE", "1536"))
 MAX_BYTES = int(os.environ.get("NANOGPT_IMAGE_MAX_BYTES", str(3 * 1024 * 1024)))
+#: GLOBAL budget for all reference data URLs in one request (base64 inflates by 4/3,
+#: and the edge rejects bodies over ~4.5MB). Per-image budget alone let 8×3MB through.
+GLOBAL_REF_BUDGET = int(os.environ.get("NANOGPT_GLOBAL_REF_BUDGET", str(3400 * 1024)))
 
 
 def _jpeg_under_budget(image: Any) -> bytes:
@@ -199,8 +202,10 @@ def _jpeg_under_budget(image: Any) -> bytes:
     )
 
 
-def _image_to_data_url(ref: Any) -> str:
-    """A wired image (AssetRef or upstream Take) as a size-capped JPEG data URL."""
+def _image_to_data_url(ref: Any, remaining_budget: int = 0) -> str:
+    """A wired image (AssetRef or upstream Take) as a size-capped JPEG data URL.
+    `remaining_budget` shrinks the per-image cap when the request is already large —
+    the edge rejects the WHOLE body over ~4.5MB, not each image individually."""
     from PIL import Image
 
     path = None
@@ -211,7 +216,27 @@ def _image_to_data_url(ref: Any) -> str:
     if not path:
         raise api.NanoGPTError("The image input is not a readable file.")
     image = Image.open(path).convert("RGB")
-    return api.bytes_to_data_url(_jpeg_under_budget(image), "image/jpeg")
+    effective = min(MAX_BYTES, max(80 * 1024, remaining_budget))
+    data = _jpeg_under_budget_capped(image, effective)
+    return api.bytes_to_data_url(data, "image/jpeg")
+
+
+def _jpeg_under_budget_capped(image: Any, budget: int) -> bytes:
+    """Same shrinking loop as _jpeg_under_budget but with an explicit byte cap."""
+    import io as _io
+
+    side = MAX_SIDE
+    for _ in range(5):
+        img = image.copy()
+        img.thumbnail((side, side), Image.LANCZOS)
+        for quality in (88, 75, 60):
+            buffer = _io.BytesIO()
+            img.save(buffer, format="JPEG", quality=quality, optimize=True)
+            data = buffer.getvalue()
+            if len(data) <= budget:
+                return data
+        side = max(320, side // 2)
+    return data
 
 
 def _file_take(ctx: Any, node: Any, kind: MediaKind, data: bytes, ext: str, params: dict[str, Any]) -> Take:
@@ -341,7 +366,14 @@ class NanoGPTImageNode(NodeRunner):
             # Two wire formats, because models differ: `image` (OpenAI gpt-image style —
             # flare/edit counts references there and 400s without them) and
             # `input_references` (the shape other models accept). Unknown keys are ignored.
-            urls = [_image_to_data_url(ref) for ref in image_refs[:8]]
+            urls = []
+            remaining = GLOBAL_REF_BUDGET
+            for ref in image_refs[:8]:
+                url = _image_to_data_url(ref, remaining_budget=remaining)
+                urls.append(url)
+                remaining -= len(url)
+                if remaining < 80 * 1024:
+                    break  # budget épuisé: plus de refs (nommées dans la réponse si besoin)
             payload["image"] = urls
             payload["input_references"] = [
                 {"type": "image_url", "image_url": {"url": url}} for url in urls
@@ -569,7 +601,14 @@ class NanoGPTVideoNode(NodeRunner):
                 )
             # Same dual-format as the image node: the array field takes data URLs (the
             # site itself posts base64 there), the text fields stay URL-only.
-            data_urls = [_image_to_data_url(ref) for ref in wired_refs[:8]]
+            data_urls = []
+            remaining = GLOBAL_REF_BUDGET
+            for ref in wired_refs[:8]:
+                url = _image_to_data_url(ref, remaining_budget=remaining)
+                data_urls.append(url)
+                remaining -= len(url)
+                if remaining < 80 * 1024:
+                    break
             hosted = [
                 line.strip()
                 for line in str(params.get("reference_images", "")).splitlines()
