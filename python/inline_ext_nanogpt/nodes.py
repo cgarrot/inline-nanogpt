@@ -384,6 +384,9 @@ class NanoGPTTextNode(NodeRunner):
         Port("prompt", "Prompt", PortKind.TEXT, required=True),
         Port("image", "Start image", PortKind.IMAGE, required=False),
         Port("last_image", "End image (last frame)", PortKind.IMAGE, required=False),
+        # Wired reference images (character sheets, style frames...): sent as capped JPEG
+        # data URLs in the referenceImages array — the URL textareas stay for hosted links.
+        Port("reference_images", "Reference images", PortKind.IMAGE_LIST, required=False),
     ),
     outputs=(Port("video", "Video", PortKind.VIDEO),),
     params=(
@@ -465,10 +468,21 @@ class NanoGPTVideoNode(NodeRunner):
         voice = str(params.get("voice", "")).strip()
         if voice:
             payload["voice"] = voice
+        wired_refs = list(inputs.get("reference_images") or [])
         for key in ("reference_images", "reference_videos", "reference_audios"):
             value = str(params.get(key, "")).strip()
             if value:
                 payload[key] = value
+        if wired_refs:
+            # Same dual-format as the image node: the array field takes data URLs (the
+            # site itself posts base64 there), the text fields stay URL-only.
+            data_urls = [_image_to_data_url(ref) for ref in wired_refs[:8]]
+            hosted = [
+                line.strip()
+                for line in str(params.get("reference_images", "")).splitlines()
+                if line.strip().startswith("http")
+            ]
+            payload["referenceImages"] = data_urls + hosted
         for index in (1, 2, 3):
             url = str(params.get(f"lora_url_{index}", "")).strip()
             if url:

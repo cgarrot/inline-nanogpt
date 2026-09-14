@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "nanogpt",
   "name": "NanoGPT",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Hosted NanoGPT models (nano-gpt.com): image, text, video and audio generation nodes. Uses the NanoGPT API key (env NANOGPT_API_KEY, ~/.config/nano-gpt/api_key, or the key file in the extension data dir).",
   "author": "cgarrot",
   "homepage": "https://nano-gpt.com",
